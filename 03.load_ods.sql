@@ -71,9 +71,9 @@ order by billing_year;
 select distinct service from sperfilyev.ods_t_billing;
 select distinct tariff from sperfilyev.ods_t_billing;
 select count(distinct billing_period) from sperfilyev.ods_t_billing;
-select min(billing_sum), max(billing_sum), avg(billing_sum) from sperfilyev.ods_t_billing;
+select min(billing_sum), max(billing_sum), avg(billing_sum), sum(billing_sum) from sperfilyev.ods_t_billing;
 
--- TODO: Определим PK. Проверим уникальность начислений
+-- Определим PK. Проверим уникальность начислений
 select count(distinct (user_id,
                        billing_period,
                        service,
@@ -81,6 +81,43 @@ select count(distinct (user_id,
                        created_at))
 from sperfilyev.ods_t_billing;
 -- Уникальности нет, 9980 уникальных записей из 10000
+
+-- Как побороть записи-дубликаты?
+-- Вариант 1. Внесём уникальность искусственно, добавив нумерацию:
+create view sperfilyev.ods_v_billing_numbered as (
+with numbered_recs as (
+    select *,
+           row_number() over (
+               partition by
+                   user_id,
+                   billing_period,
+                   service,
+                   tariff
+               order by
+                   created_at
+           ) as row_num
+    from sperfilyev.ods_t_billing)
+select * from numbered_recs
+order by user_id, billing_period, service, tariff, created_at);
+
+select * from sperfilyev.ods_v_billing_numbered;
+select count(distinct (user_id, billing_period, service, tariff, row_num)) from sperfilyev.ods_v_billing_numbered;
+-- Уникальность достигнута. Но для DWH такой "синтетический" ключ плохо подходит,
+-- т.к. при перезаливках из систем-источников непонятно, новые будут записи или нет
+drop view sperfilyev.ods_v_billing_numbered;
+
+-- Вариант 2. Исходить из гипотезы, что записи-дубликаты являются перерасчётами-доначислениями,
+-- сливать их в одну запись при загрузке ODS => DDS. Например, так:
+with grouped_recs as (
+    select user_id, billing_period, service, tariff, sum(billing_sum) as billing_sum, created_at
+    from sperfilyev.ods_t_billing
+    group by user_id, billing_period, service, tariff, created_at
+)
+select count (distinct (user_id, billing_period, service, tariff, created_at)),
+       count (distinct billing_sum),
+       sum(billing_sum)
+from grouped_recs;
+-- В дальнейшем при построении DWH используем Вариант 2
 
 -- Проверить. Источник issue
 select count(*) from sperfilyev.ods_t_issue;
